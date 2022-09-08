@@ -5,48 +5,74 @@ using Microsoft.AspNetCore.Mvc;
 using QuizService.Model;
 using QuizService.Model.Domain;
 using System.Linq;
-using System.Threading.Tasks;
-using System;
 
 namespace QuizService.Controllers;
 
 [Route("api/quizzes")]
 public class QuizController : Controller
 {
-    //Todo : We can move the logic for all other methods in service class as done for below  Get methods.
-    //Todo : We can also remove the IDbConnection from here and move to the Service class(As done for Get methods)
     private readonly IDbConnection _connection;
-    private readonly IQuizService _quizService;
 
-    public QuizController(IDbConnection connection, IQuizService quizService)
+    public QuizController(IDbConnection connection)
     {
         _connection = connection;
-        _quizService = quizService;
     }
 
     // GET api/quizzes
     [HttpGet]
-    public async Task<List<QuizResponseModel>> Get()
+    public IEnumerable<QuizResponseModel> Get()
     {
-       return await _quizService.GetAllAsync();
-       
+        const string sql = "SELECT * FROM Quiz;";
+        var quizzes = _connection.Query<Quiz>(sql);
+        return quizzes.Select(quiz =>
+            new QuizResponseModel
+            {
+                Id = quiz.Id,
+                Title = quiz.Title
+            });
     }
 
     // GET api/quizzes/5
     [HttpGet("{id}")]
-    public async Task<ActionResult<QuizResponseModel>> Get(int id)
+    public object Get(int id)
     {
-        try
+        const string quizSql = "SELECT * FROM Quiz WHERE Id = @Id;";
+        var quiz = _connection.QuerySingle<Quiz>(quizSql, new {Id = id});
+        if (quiz == null)
+            return NotFound();
+        const string questionsSql = "SELECT * FROM Question WHERE QuizId = @QuizId;";
+        var questions = _connection.Query<Question>(questionsSql, new {QuizId = id});
+        const string answersSql = "SELECT a.Id, a.Text, a.QuestionId FROM Answer a INNER JOIN Question q ON a.QuestionId = q.Id WHERE q.QuizId = @QuizId;";
+        var answers = _connection.Query<Answer>(answersSql, new {QuizId = id})
+            .Aggregate(new Dictionary<int, IList<Answer>>(), (dict, answer) => {
+                if (!dict.ContainsKey(answer.QuestionId))
+                    dict.Add(answer.QuestionId, new List<Answer>());
+                dict[answer.QuestionId].Add(answer);
+                return dict;
+            });
+        return new QuizResponseModel
         {
-            var quiz = _connection.QuerySingleOrDefault<Quiz>(Queries.SelectAllQuizzesById, new { Id = id });
-            if (quiz == null)
-                return NotFound();
-            return await _quizService.GetAsyncById(id);
-        }
-        catch (Exception)
-        {
-            return BadRequest();
-        }
+            Id = quiz.Id,
+            Title = quiz.Title,
+            Questions = questions.Select(question => new QuizResponseModel.QuestionItem
+            {
+                Id = question.Id,
+                Text = question.Text,
+                Answers = answers.ContainsKey(question.Id)
+                    ? answers[question.Id].Select(answer => new QuizResponseModel.AnswerItem
+                    {
+                        Id = answer.Id,
+                        Text = answer.Text
+                    })
+                    : new QuizResponseModel.AnswerItem[0],
+                CorrectAnswerId = question.CorrectAnswerId
+            }),
+            Links = new Dictionary<string, string>
+            {
+                {"self", $"/api/quizzes/{id}"},
+                {"questions", $"/api/quizzes/{id}/questions"}
+            }
+        };
     }
 
     // POST api/quizzes
